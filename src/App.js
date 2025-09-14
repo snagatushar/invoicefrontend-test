@@ -7,7 +7,7 @@ import { BrowserRouter as Router, Routes, Route, useParams, Link } from "react-r
 
 // -------- Supabase Setup --------
 const supabaseUrl = "https://begfjxlvjaubnizkvruw.supabase.co";
-const supabaseKey = "YOUR_SUPABASE_ANON_KEY";
+const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlZ2ZqeGx2amF1Ym5pemt2cnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwNjM0MzcsImV4cCI6MjA3MTYzOTQzN30.P6s1vWqAhXaNclfQw1NQ8Sj974uQJxAmoYG9mPvpKSQ";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // -------- Helpers --------
