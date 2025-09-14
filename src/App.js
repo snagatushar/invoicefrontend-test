@@ -162,7 +162,7 @@ export default function App() {
       await supabase.from("backend").update({ pdf_url: pdfUrl }).eq("phonenumber", invoice.phonenumber);
 
       // Trigger webhook
-      await fetch("https://n8n-image2doc-u35379.vm.elestio.app/webhook-test/f06adee0-b5f2-40f4-a293-4ec1067a14b0", {
+      await fetch("https://n8n-image2doc-u35379.vm.elestio.app/webhook/f06adee0-b5f2-40f4-a293-4ec1067a14b0", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
