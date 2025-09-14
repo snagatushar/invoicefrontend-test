@@ -1,12 +1,13 @@
 // App.jsx
 import { useEffect, useState, useMemo } from "react";
+import { useParams } from "react-router-dom";
 import { createClient } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 const supabaseUrl = "https://begfjxlvjaubnizkvruw.supabase.co";
 const supabaseKey =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlZ2ZqeGx2amF1Ym5pemt2cnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwNjM0MzcsImV4cCI6MjA3MTYzOTQzN30.P6s1vWqAhXaNclfQw1NQ8Sj974uQJxAmoYG9mPvpKSQ";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlZ2ZqeGx2amF1Ym5pemt2cnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwNjM0MzcsImV4cCI6MjA3MTYzOTQzN30.P6s1vWqAhXaNclfQw1NQ8Sj974uQJxAmoYG9mPvpKSQ"; // Replace with your Supabase key
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 /** -------- Helpers -------- */
@@ -70,30 +71,37 @@ const normalizeRows = (inv) => {
 
 /** -------- Component -------- */
 export default function App() {
-  const [invoices, setInvoices] = useState([]);
+  const { phonenumber } = useParams(); // Read phone from URL
+  const [invoice, setInvoice] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editData, setEditData] = useState({});
   const [loading, setLoading] = useState(false);
 
+  /** ---- Fetch Invoice ---- */
   const fetchData = async () => {
-    const { data, error } = await supabase.from("backend").select("*");
+    if (!phonenumber) return;
+    const { data, error } = await supabase
+      .from("backend")
+      .select("*")
+      .eq("phonenumber", phonenumber)
+      .single();
     if (error) {
       console.error(error);
-      alert("Failed to load invoices.");
+      alert("Failed to load invoice.");
       return;
     }
-    const uppercased = data.map((inv) => ({
-      ...inv,
-      Dealer: toUpperIfString(inv.Dealer ?? ""),
-      invoice_date: toUpperIfString(inv.invoice_date ?? ""),
-      status: toUpperIfString(inv.status ?? ""),
-    }));
-    setInvoices(uppercased);
+    const uppercased = {
+      ...data,
+      Dealer: toUpperIfString(data.Dealer ?? ""),
+      invoice_date: toUpperIfString(data.invoice_date ?? ""),
+      status: toUpperIfString(data.status ?? ""),
+    };
+    setInvoice(uppercased);
   };
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [phonenumber]);
 
   /** ---- PDF ---- */
   const generatePDFBlob = (invoiceLike) => {
@@ -141,56 +149,36 @@ export default function App() {
   };
 
   /** ---- Approve ---- */
-  const handleApprove = async (invoice) => {
+  const handleApprove = async () => {
+    if (!invoice) return;
     try {
       setLoading(true);
       const rows = normalizeRows(invoice);
-      const amounts = rows.map((r) => num(r.quantity) * num(r.rate));
-      const total = amounts.reduce((a, b) => a + b, 0);
+      const total = rows.map((r) => num(r.quantity) * num(r.rate)).reduce((a, b) => a + b, 0);
 
-      // ✅ Update Supabase status & totals
       const { error: updateError } = await supabase
         .from("backend")
-        .update({
-          status: "APPROVED",
-          amount: total,
-          total: total,
-        })
+        .update({ status: "APPROVED", amount: total, total: total })
         .eq("phonenumber", invoice.phonenumber);
       if (updateError) throw updateError;
 
-      // ✅ Generate PDF blob
-      const pdfBlob = generatePDFBlob({
-        ...invoice,
-        status: "APPROVED",
-      });
-
-      // ✅ Use phonenumber as filename
+      const pdfBlob = generatePDFBlob({ ...invoice, status: "APPROVED" });
       const fileName = `invoice_${invoice.phonenumber}.pdf`;
-
-      // ✅ Upload to Supabase Storage
       const { error: uploadError } = await supabase.storage
         .from("invoices")
-        .upload(fileName, pdfBlob, {
-          contentType: "application/pdf",
-          upsert: true,
-        });
+        .upload(fileName, pdfBlob, { contentType: "application/pdf", upsert: true });
       if (uploadError) throw uploadError;
 
-      // ✅ Get public URL
-      const { data: urlData } = supabase.storage
-        .from("invoices")
-        .getPublicUrl(fileName);
+      const { data: urlData } = supabase.storage.from("invoices").getPublicUrl(fileName);
       const pdfUrl = urlData.publicUrl;
 
-      // ✅ Save public URL in DB
       const { error: urlError } = await supabase
         .from("backend")
         .update({ pdf_url: pdfUrl })
         .eq("phonenumber", invoice.phonenumber);
       if (urlError) throw urlError;
 
-      // ✅ Trigger webhook with PUBLIC URL
+      // Trigger webhook
       await fetch(
         "https://n8n-image2doc-u35379.vm.elestio.app/webhook-test/f06adee0-b5f2-40f4-a293-4ec1067a14b0",
         {
@@ -206,8 +194,8 @@ export default function App() {
         }
       );
 
-      alert("✅ Approved, PDF uploaded to Supabase & webhook sent!");
-      await fetchData();
+      alert("✅ Approved, PDF uploaded & webhook sent!");
+      fetchData();
     } catch (e) {
       console.error(e);
       alert("❌ Approve failed. See console.");
@@ -216,18 +204,12 @@ export default function App() {
     }
   };
 
-  /** ---- Edit / Save ---- */
-  const handleEdit = (inv) => {
-    const rows = normalizeRows(inv);
-    setEditId(inv.phonenumber);
-    setEditData({
-      ...inv,
-      invoice_number: inv.invoice_number ?? "",
-      Dealer: inv.Dealer ?? "",
-      phonenumber: inv.phonenumber ?? "",
-      invoice_date: inv.invoice_date ?? "",
-      rows,
-    });
+  /** ---- Edit ---- */
+  const handleEdit = () => {
+    if (!invoice) return;
+    const rows = normalizeRows(invoice);
+    setEditId(invoice.phonenumber);
+    setEditData({ ...invoice, rows });
   };
 
   const handleChangeHeader = (field, value) => {
@@ -245,10 +227,7 @@ export default function App() {
   const addRow = () => {
     setEditData((s) => ({
       ...s,
-      rows: [
-        ...s.rows,
-        { productname: "", description: "", quantity: "", units: "", rate: "" },
-      ],
+      rows: [...s.rows, { productname: "", description: "", quantity: "", units: "", rate: "" }],
     }));
   };
 
@@ -260,60 +239,45 @@ export default function App() {
   };
 
   const calcEditTotals = useMemo(() => {
-    if (!editId || !editData?.rows) return { lines: [], total: 0 };
-    const lines = editData.rows.map((r) => num(r.quantity) * num(r.rate));
-    const total = lines.reduce((a, b) => a + b, 0);
-    return { lines, total };
+    if (!editId || !editData?.rows) return { total: 0 };
+    const total = editData.rows.map((r) => num(r.quantity) * num(r.rate)).reduce((a, b) => a + b, 0);
+    return { total };
   }, [editId, editData]);
 
   const handleSave = async () => {
     try {
       setLoading(true);
-      const rows = (editData.rows || []).filter((r) => {
-        return (
+      const rows = editData.rows.filter(
+        (r) =>
           String(r.productname).trim() ||
           String(r.description).trim() ||
           String(r.quantity).trim() ||
           String(r.units).trim() ||
           String(r.rate).trim()
-        );
-      });
-
-      const products = rows.map((r) => r.productname ?? "");
-      const descriptions = rows.map((r) => r.description ?? "");
-      const quantities = rows.map((r) => r.quantity ?? "");
-      const units = rows.map((r) => r.units ?? "");
-      const rates = rows.map((r) => r.rate ?? "");
-
-      const total = rows
-        .map((r) => num(r.quantity) * num(r.rate))
-        .reduce((a, b) => a + b, 0);
+      );
 
       const payload = {
         invoice_number: editData.invoice_number ?? "",
         Dealer: editData.Dealer ?? "",
         phonenumber: editData.phonenumber ?? "",
         invoice_date: editData.invoice_date ?? "",
-        productname: JSON.stringify(products),
-        description: JSON.stringify(descriptions),
-        quantity: JSON.stringify(quantities),
-        units: JSON.stringify(units),
-        rate: JSON.stringify(rates),
-        amount: total,
-        total: total,
+        productname: JSON.stringify(rows.map((r) => r.productname ?? "")),
+        description: JSON.stringify(rows.map((r) => r.description ?? "")),
+        quantity: JSON.stringify(rows.map((r) => r.quantity ?? "")),
+        units: JSON.stringify(rows.map((r) => r.units ?? "")),
+        rate: JSON.stringify(rows.map((r) => r.rate ?? "")),
+        amount: calcEditTotals.total,
+        total: calcEditTotals.total,
         status: "DRAFT",
       };
 
-      const { error } = await supabase
-        .from("backend")
-        .update(payload)
-        .eq("phonenumber", editId);
+      const { error } = await supabase.from("backend").update(payload).eq("phonenumber", editId);
       if (error) throw error;
 
       alert("💾 Saved!");
       setEditId(null);
       setEditData({});
-      await fetchData();
+      fetchData();
     } catch (e) {
       console.error(e);
       alert("❌ Save failed. See console.");
@@ -322,229 +286,130 @@ export default function App() {
     }
   };
 
-  /** ---- Render ---- */
+  if (!invoice) return <p>Loading invoice...</p>;
+
+  const rows = normalizeRows(editId ? editData : invoice);
+  const total = rows.map((r) => num(r.quantity) * num(r.rate)).reduce((a, b) => a + b, 0);
+  const isEditing = editId === invoice.phonenumber;
+
   return (
     <div style={{ padding: 20, opacity: loading ? 0.6 : 1 }}>
-      <h2 style={{ marginBottom: 12 }}>Invoices</h2>
+      <h2>Invoice for {invoice.phonenumber}</h2>
 
-      {invoices.map((inv) => {
-        const rows = normalizeRows(inv);
-        const total = rows
-          .map((r) => num(r.quantity) * num(r.rate))
-          .reduce((a, b) => a + b, 0);
+      {isEditing ? (
+        <div style={{ display: "grid", gap: 10, maxWidth: 600 }}>
+          <label>
+            Invoice No:&nbsp;
+            <input value={editData.invoice_number} onChange={(e) => handleChangeHeader("invoice_number", e.target.value)} />
+          </label>
+          <label>
+            Dealer:&nbsp;
+            <input value={editData.Dealer} onChange={(e) => handleChangeHeader("Dealer", e.target.value)} />
+          </label>
+          <label>
+            Phone:&nbsp;
+            <input value={editData.phonenumber} onChange={(e) => handleChangeHeader("phonenumber", e.target.value)} />
+          </label>
+          <label>
+            Date:&nbsp;
+            <input value={editData.invoice_date} onChange={(e) => handleChangeHeader("invoice_date", e.target.value)} />
+          </label>
+          <div>Status: {invoice.status}</div>
+        </div>
+      ) : (
+        <p>
+          <b>Dealer:</b> {invoice.Dealer} <br />
+          <b>Phone:</b> {invoice.phonenumber} <br />
+          <b>Date:</b> {invoice.invoice_date} <br />
+          <b>Status:</b> {invoice.status} <br />
+          {invoice.pdf_url && (
+            <a href={invoice.pdf_url} target="_blank" rel="noreferrer">
+              📄 View PDF
+            </a>
+          )}
+        </p>
+      )}
 
-        const isEditing = editId === inv.phonenumber;
-
-        return (
-          <div
-            key={inv.phonenumber}
-            style={{
-              border: "2px solid #222",
-              marginBottom: 20,
-              padding: 12,
-              borderRadius: 8,
-            }}
-          >
-            <h3 style={{ marginTop: 0 }}>
-              INVOICE:{" "}
-              {isEditing ? (
-                <input
-                  value={editData.invoice_number ?? ""}
-                  onChange={(e) =>
-                    handleChangeHeader("invoice_number", e.target.value)
-                  }
-                  style={{ width: 220 }}
-                />
-              ) : (
-                String(inv.invoice_number ?? "").toUpperCase()
-              )}
-            </h3>
-
-            {isEditing ? (
-              <div style={{ display: "grid", gap: 6, maxWidth: 600 }}>
-                <label>
-                  Dealer:&nbsp;
-                  <input
-                    value={editData.Dealer ?? ""}
-                    onChange={(e) =>
-                      handleChangeHeader("Dealer", e.target.value)
-                    }
-                    style={{ width: 260 }}
-                  />
-                </label>
-                <label>
-                  Phone:&nbsp;
-                  <input
-                    value={editData.phonenumber ?? ""}
-                    onChange={(e) =>
-                      handleChangeHeader("phonenumber", e.target.value)
-                    }
-                    style={{ width: 260 }}
-                  />
-                </label>
-                <label>
-                  Date:&nbsp;
-                  <input
-                    value={editData.invoice_date ?? ""}
-                    onChange={(e) =>
-                      handleChangeHeader("invoice_date", e.target.value)
-                    }
-                    style={{ width: 260 }}
-                  />
-                </label>
-                <div>Status: {inv.status}</div>
-              </div>
-            ) : (
-              <p style={{ lineHeight: 1.6 }}>
-                <b>DEALER:</b> {inv.Dealer}
-                <br />
-                <b>PHONE:</b> {inv.phonenumber}
-                <br />
-                <b>DATE:</b> {inv.invoice_date}
-                <br />
-                <b>STATUS:</b> {inv.status}
-                <br />
-                {inv.pdf_url && (
-                  <a href={inv.pdf_url} target="_blank" rel="noreferrer">
-                    📄 View PDF
-                  </a>
+      <table border="1" cellPadding="6" style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th>PRODUCT</th>
+            <th>DESCRIPTION</th>
+            <th>QUANTITY</th>
+            <th>UNITS</th>
+            <th>RATE</th>
+            <th>AMOUNT</th>
+            {isEditing && <th>ACTION</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const amount = num(r.quantity) * num(r.rate);
+            return (
+              <tr key={i}>
+                {isEditing ? (
+                  <>
+                    <td>
+                      <input value={r.productname} onChange={(e) => handleRowChange(i, "productname", e.target.value)} />
+                    </td>
+                    <td>
+                      <input value={r.description} onChange={(e) => handleRowChange(i, "description", e.target.value)} />
+                    </td>
+                    <td>
+                      <input value={r.quantity} onChange={(e) => handleRowChange(i, "quantity", e.target.value)} />
+                    </td>
+                    <td>
+                      <input value={r.units} onChange={(e) => handleRowChange(i, "units", e.target.value)} />
+                    </td>
+                    <td>
+                      <input value={r.rate} onChange={(e) => handleRowChange(i, "rate", e.target.value)} />
+                    </td>
+                    <td>{amount.toFixed(2)}</td>
+                    <td>
+                      <button onClick={() => removeRow(i)}>Remove</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td>{r.productname}</td>
+                    <td>{r.description}</td>
+                    <td>{r.quantity}</td>
+                    <td>{r.units}</td>
+                    <td>{r.rate}</td>
+                    <td>{amount.toFixed(2)}</td>
+                  </>
                 )}
-              </p>
-            )}
+              </tr>
+            );
+          })}
+          <tr>
+            <td colSpan={5} style={{ textAlign: "right", fontWeight: "bold" }}>
+              TOTAL
+            </td>
+            <td style={{ fontWeight: "bold" }}>{isEditing ? calcEditTotals.total.toFixed(2) : total.toFixed(2)}</td>
+            {isEditing && <td />}
+          </tr>
+        </tbody>
+      </table>
 
-            <table
-              border="1"
-              cellPadding="6"
-              style={{
-                marginTop: 10,
-                width: "100%",
-                borderCollapse: "collapse",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th>PRODUCT</th>
-                  <th>DESCRIPTION</th>
-                  <th>QUANTITY</th>
-                  <th>UNITS</th>
-                  <th>RATE</th>
-                  <th>AMOUNT</th>
-                  {isEditing && <th>ACTION</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {isEditing
-                  ? (editData.rows || []).map((r, i) => {
-                      const amount = num(r.quantity) * num(r.rate);
-                      return (
-                        <tr key={i}>
-                          <td>
-                            <input
-                              value={r.productname ?? ""}
-                              onChange={(e) =>
-                                handleRowChange(i, "productname", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              value={r.description ?? ""}
-                              onChange={(e) =>
-                                handleRowChange(i, "description", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              value={String(r.quantity ?? "")}
-                              onChange={(e) =>
-                                handleRowChange(i, "quantity", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              value={r.units ?? ""}
-                              onChange={(e) =>
-                                handleRowChange(i, "units", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              value={String(r.rate ?? "")}
-                              onChange={(e) =>
-                                handleRowChange(i, "rate", e.target.value)
-                              }
-                            />
-                          </td>
-                          <td>{amount.toFixed(2)}</td>
-                          <td>
-                            <button onClick={() => removeRow(i)}>Remove</button>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  : rows.map((r, i) => {
-                      const amount = num(r.quantity) * num(r.rate);
-                      return (
-                        <tr key={i}>
-                          <td>{r.productname}</td>
-                          <td>{r.description}</td>
-                          <td>{r.quantity}</td>
-                          <td>{r.units}</td>
-                          <td>{r.rate}</td>
-                          <td>{amount.toFixed(2)}</td>
-                        </tr>
-                      );
-                    })}
-                <tr>
-                  <td
-                    colSpan={5}
-                    style={{ textAlign: "right", fontWeight: "bold" }}
-                  >
-                    TOTAL
-                  </td>
-                  <td style={{ fontWeight: "bold" }}>
-                    {isEditing
-                      ? calcEditTotals.total.toFixed(2)
-                      : total.toFixed(2)}
-                  </td>
-                  {isEditing && <td />}
-                </tr>
-              </tbody>
-            </table>
+      {isEditing ? (
+        <>
+          <button onClick={addRow} style={{ marginTop: 10, marginRight: 10 }}>
+            Add Item
+          </button>
+          <button onClick={handleSave} style={{ marginTop: 10 }}>
+            Save
+          </button>
+        </>
+      ) : (
+        <button onClick={handleEdit} style={{ marginTop: 10, marginRight: 10 }}>
+          Edit
+        </button>
+      )}
 
-            {isEditing ? (
-              <>
-                <button
-                  onClick={addRow}
-                  style={{ marginTop: 10, marginRight: 10 }}
-                >
-                  Add Item
-                </button>
-                <button onClick={handleSave} style={{ marginTop: 10 }}>
-                  Save
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => handleEdit(inv)}
-                style={{ marginTop: 10, marginRight: 10 }}
-              >
-                Edit
-              </button>
-            )}
-
-            <button
-              onClick={() => handleApprove(inv)}
-              style={{ marginTop: 10, marginLeft: 10 }}
-            >
-              Approve
-            </button>
-          </div>
-        );
-      })}
+      <button onClick={handleApprove} style={{ marginTop: 10, marginLeft: 10 }}>
+        Approve
+      </button>
     </div>
   );
 }
