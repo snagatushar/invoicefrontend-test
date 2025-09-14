@@ -4,12 +4,11 @@ import { createClient } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-// -------------------- Supabase --------------------
 const supabaseUrl = "https://begfjxlvjaubnizkvruw.supabase.co";
-const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlZ2ZqeGx2amF1Ym5pemt2cnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwNjM0MzcsImV4cCI6MjA3MTYzOTQzN30.P6s1vWqAhXaNclfQw1NQ8Sj974uQJxAmoYG9mPvpKSQ"; // Replace with your Supabase anon key
+const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlZ2ZqeGx2amF1Ym5pemt2cnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwNjM0MzcsImV4cCI6MjA3MTYzOTQzN30.P6s1vWqAhXaNclfQw1NQ8Sj974uQJxAmoYG9mPvpKSQ"; // Replace with your anon key
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// -------------------- Helpers --------------------
+/** -------- Helpers -------- */
 const safeParse = (val) => {
   if (!val) return [];
   if (typeof val === "string") {
@@ -48,14 +47,14 @@ const normalizeRows = (inv) => {
   return rows;
 };
 
-// -------------------- Component --------------------
+/** -------- Component -------- */
 export default function App() {
   const [invoice, setInvoice] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editData, setEditData] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // -------------------- Fetch Invoice --------------------
+  /** ---- Fetch invoice from URL ---- */
   useEffect(() => {
     const phone = window.location.pathname.replace("/", "").trim();
     if (!phone) return;
@@ -66,7 +65,6 @@ export default function App() {
         .select("*")
         .eq("phonenumber", phone)
         .single();
-
       if (error) return console.error(error);
 
       setInvoice({
@@ -76,11 +74,10 @@ export default function App() {
         status: (data.status ?? "").toUpperCase(),
       });
     };
-
     fetchInvoice();
   }, []);
 
-  // -------------------- PDF Generation --------------------
+  /** ---- PDF Generation ---- */
   const generatePDFBlob = (invoiceLike) => {
     const rows = normalizeRows(invoiceLike);
     const doc = new jsPDF();
@@ -112,29 +109,23 @@ export default function App() {
     return doc.output("blob");
   };
 
-  // -------------------- Approve Invoice --------------------
+  /** ---- Approve Invoice ---- */
   const handleApprove = async (inv) => {
     try {
       setLoading(true);
       const rows = normalizeRows(inv);
       const total = rows.map((r) => num(r.quantity) * num(r.rate)).reduce((a, b) => a + b, 0);
 
-      // Update status in DB
       await supabase.from("backend").update({ status: "APPROVED", total, amount: total }).eq("phonenumber", inv.phonenumber);
 
-      // Generate PDF
       const pdfBlob = generatePDFBlob({ ...inv, status: "APPROVED" });
       const fileName = `invoice_${inv.phonenumber}.pdf`;
       await supabase.storage.from("invoices").upload(fileName, pdfBlob, { contentType: "application/pdf", upsert: true });
 
-      // Get public URL
       const { data: urlData } = supabase.storage.from("invoices").getPublicUrl(fileName);
       const pdfUrl = urlData.publicUrl;
-
-      // Save PDF URL in DB
       await supabase.from("backend").update({ pdf_url: pdfUrl }).eq("phonenumber", inv.phonenumber);
 
-      // Trigger Webhook
       await fetch("https://n8n-image2doc-u35379.vm.elestio.app/webhook/f06adee0-b5f2-40f4-a293-4ec1067a14b0", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -150,7 +141,7 @@ export default function App() {
     } finally { setLoading(false); }
   };
 
-  // -------------------- Edit / Save --------------------
+  /** ---- Edit / Save Invoice ---- */
   const handleEdit = () => {
     if (!invoice) return;
     setEditId(invoice.phonenumber);
